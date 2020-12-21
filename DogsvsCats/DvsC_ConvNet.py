@@ -6,9 +6,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import time
+import matplotlib.pyplot as plt
+from matplotlib import style
 
 # change to True if the data (i.e. npy file needs to be built)
 REBUILD_DATA = False
+TRAIN_MODEL = False
+MODEL_NAME = f"model-{int(time.time())}" # create model name based on current time
 
 rebuild = input("Build the data? (y/n): ")
 while rebuild != 'y' and rebuild != 'n':
@@ -18,6 +23,16 @@ if rebuild == 'y':
     REBUILD_DATA = True
 elif rebuild == 'n':
     REBUILD_DATA = False
+
+train_model = input("Train the model? (y/n): ")
+while train_model != 'y' and train_model != 'n':
+    train_model = input("Enter y or n: ")
+
+if train_model == 'y':
+    TRAIN_MODEL = True
+elif rebuild == 'n':
+    TRAIN_MODEL = False
+
 
 class DogsvsCats():
     img_size = 50
@@ -54,13 +69,6 @@ class DogsvsCats():
         print("Cats:", self.catcount)
         print("Dogs:", self.dogcount)
 
-# builds training data
-if REBUILD_DATA:
-    dogsvscats = DogsvsCats()
-    dogsvscats.make_training_data()
-
-training_data = np.load("training_data.npy", allow_pickle=True)
-print(len(training_data))
 
 class Net(nn.Module):
     def __init__(self):
@@ -94,56 +102,122 @@ class Net(nn.Module):
 
         return F.softmax(x, dim=1)
 
+# train model
+def train(net, train_X, train_Y, test_X, test_Y):
+    BATCH_SIZE = 100
+    EPOCHS = 8
 
-net = Net()
+    with open("model.log", "a") as f:
+        for epoch in range(EPOCHS):
+            for i in tqdm(range(0, len(train_X), BATCH_SIZE)):
+                batch_X = train_X[i:i+BATCH_SIZE].view(-1, 1, 50, 50)
+                batch_Y = train_Y[i:i+BATCH_SIZE]
 
-optimizer = optim.Adam(net.parameters(), lr = 0.001)
-loss_function = nn.MSELoss()
+                acc, loss = fwd_pass(batch_X, batch_Y, train=True)
 
-X = torch.Tensor([i[0] for i in training_data]).view(-1, 50, 50) # image
-X = X/255.0
-Y = torch.Tensor([i[1] for i in training_data]) # one hot vector for type
+                if i % 50 == 0:
+                    val_acc, val_loss = test(test_X, test_Y, size=100)
+                    f.write(f"{MODEL_NAME},{round(time.time(),3)},{round(float(acc),2)},{round(float(loss), 4)},{round(float(val_acc),2)},{round(float(val_loss),4)},{epoch}\n")
 
-VAL_PCT = 0.1
-val_size = int(len(X)*VAL_PCT)
-print("val_size =", val_size)
+# find accuracy of Model with test data
+def test(test_X, test_Y, size=32):
+    X, Y = test_X[:size], test_Y[:size]
+    val_acc, val_loss = fwd_pass(X.view(-1, 1, 50, 50), Y)
+    return val_acc, val_loss
 
-train_X = X[:-val_size]
-train_Y = Y[:-val_size]
+def fwd_pass(X, Y, train=False):
 
-test_X = X[-val_size:]
-test_Y = Y[-val_size:]
-
-print("train_X =", len(train_X))
-print("test_X =", len(test_X))
-
-BATCH_SIZE = 100
-EPOCHS = 5
-
-for epoch in range(EPOCHS):
-    for i in tqdm(range(0, len(train_X), BATCH_SIZE)):
-        batch_X = train_X[i:i+BATCH_SIZE].view(-1, 1, 50, 50)
-        batch_Y = train_Y[i:i+BATCH_SIZE]
-
+    if train:
         net.zero_grad()
-        outputs = net(batch_X)
-        loss = loss_function(outputs, batch_Y)
+    outputs = net(X)
+    matches = [torch.argmax(i)==torch.argmax(j) for i, j in zip(outputs, Y)]
+    acc = matches.count(True)/len(matches)
+    loss = loss_function(outputs, Y)
+
+    if train:
         loss.backward()
         optimizer.step()
 
-print(loss)
+    return acc, loss
 
-# find accuracy of Model with test data
-correct = 0
-total = 0
+# create graph of losses and accuracy over time
+def create_acc_loss_graph(model_name):
+    contents = open("model.log", "r").read().split("\n")
 
-with torch.no_grad():
-    for i in tqdm(range(len(test_X))):
-        real_class = torch.argmax(test_Y[i])
-        net_out = net(test_X[i].view(-1, 1, 50, 50))[0]
-        predicted_class = torch.argmax(net_out)
-        if predicted_class == real_class:
-            correct += 1
-        total += 1
+    times = []
+    accuracies = []
+    losses = []
 
-print("Accuracy", round(correct/total, 3))
+    val_accs = []
+    val_losses = []
+    epochs = []
+
+    for c in contents:
+        if model_name in c:
+            name, timestamp, acc, loss, val_acc, val_loss, epoch = c.split(",")
+
+            times.append(float(timestamp))
+            accuracies.append(float(acc))
+            losses.append(float(loss))
+
+            val_accs.append(float(val_acc))
+            val_losses.append(float(val_loss))
+            epochs.append(float(epoch))
+
+
+    fig = plt.figure()
+
+    ax1 = plt.subplot2grid((2,1), (0,0))
+    ax2 = plt.subplot2grid((2,1), (1,0), sharex=ax1)
+
+
+    ax1.plot(times, accuracies, label="acc")
+    ax1.plot(times, val_accs, label="val_acc")
+    ax1.legend(loc=2)
+    ax2.plot(times,losses, label="loss")
+    ax2.plot(times,val_losses, label="val_loss")
+    ax2.legend(loc=2)
+    plt.show()
+
+
+if __name__ == "__main__" :
+    if TRAIN_MODEL:
+        # initialze neural network
+        net = Net()
+        print(net)
+
+        # builds training data
+        if REBUILD_DATA:
+            dogsvscats = DogsvsCats()
+            dogsvscats.make_training_data()
+
+        training_data = np.load("training_data.npy", allow_pickle=True)
+        print(len(training_data))
+
+        # initialze optimizer and loss function to train model
+        optimizer = optim.Adam(net.parameters(), lr = 0.001)
+        loss_function = nn.MSELoss()
+
+        X = torch.Tensor([i[0] for i in training_data]).view(-1, 50, 50) # image
+        X = X/255.0
+        Y = torch.Tensor([i[1] for i in training_data]) # one hot vector for type
+
+        VAL_PCT = 0.1  # reserved percentage of data for validation
+        val_size = int(len(X)*VAL_PCT)
+        print("val_size =", val_size)
+
+        train_X = X[:-val_size]
+        train_Y = Y[:-val_size]
+
+        test_X = X[-val_size:]
+        test_Y = Y[-val_size:]
+
+        print("train_X =", len(train_X))
+        print("test_X =", len(test_X))
+
+        train(net, train_X, train_Y, test_X, test_Y)
+        val_acc, val_loss = test(test_X, test_Y, size=100)
+        print(val_acc, val_loss)
+
+    style.use("ggplot")
+    create_acc_loss_graph("model-1608524563") # create graph
